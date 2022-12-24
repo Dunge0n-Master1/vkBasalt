@@ -355,6 +355,8 @@ namespace vkBasalt
         return result;
     }
 
+    std::vector<std::string> effectStrings = {"cas"};
+
     VKAPI_ATTR VkResult VKAPI_CALL vkBasalt_GetSwapchainImagesKHR(VkDevice       device,
                                                                   VkSwapchainKHR swapchain,
                                                                   uint32_t*      pCount,
@@ -384,7 +386,9 @@ namespace vkBasalt
         pLogicalSwapchain->images.resize(pLogicalSwapchain->imageCount);
         pLogicalDevice->vkd.GetSwapchainImagesKHR(device, swapchain, &pLogicalSwapchain->imageCount, pLogicalSwapchain->images.data());
 
-        std::vector<std::string> effectStrings = pConfig->getOption<std::vector<std::string>>("effects", {"cas"});
+        effectStrings = pConfig->getOption<std::vector<std::string>>("effects", {"cas"});
+        if (effectStrings.empty())
+            effectStrings = {"cas"};
 
         // create 1 more set of images when we can't use the swapchain it self
         uint32_t fakeImageCount = pLogicalSwapchain->imageCount * (effectStrings.size() + !pLogicalDevice->supportsMutableFormat);
@@ -532,10 +536,13 @@ namespace vkBasalt
     {
         scoped_lock l(globalLock);
 
-        static uint32_t keySymbol = convertToKeySym(pConfig->getOption<std::string>("toggleKey", "Home"));
+        static const uint32_t keySymbol       = convertToKeySym(pConfig->getOption<std::string>("toggleKey", "Home"));
+        static const uint32_t keySymbolReload = convertToKeySym(pConfig->getOption<std::string>("reloadKey", "End"));
 
-        static bool pressed       = false;
-        static bool presentEffect = pConfig->getOption<bool>("enableOnLaunch", true);
+        static bool        pressed          = false;
+        static bool        presentEffect    = pConfig->getOption<bool>("enableOnLaunch", true);
+        static const bool  enableAutoUpdate = (getenv("VKBASALT_AUTOUPDATE") != nullptr) && (strcmp(getenv("VKBASALT_AUTOUPDATE"), "1") == 0);
+        static std::time_t lastReloadTime   = std::time(nullptr);
 
         if (isKeyPressed(keySymbol))
         {
@@ -551,6 +558,152 @@ namespace vkBasalt
         }
 
         LogicalDevice* pLogicalDevice = deviceMap[GetKey(queue)].get();
+
+        if (isKeyPressed(keySymbolReload) || (enableAutoUpdate && lastReloadTime < std::time(nullptr)))
+        {
+            lastReloadTime = std::time(nullptr);
+            pConfig.reset(new Config());
+
+            for (unsigned int i = 0; i < (*pPresentInfo).swapchainCount; i++)
+            {
+                VkSwapchainKHR    swapchain         = (*pPresentInfo).pSwapchains[i];
+                LogicalSwapchain* pLogicalSwapchain = swapchainMap[swapchain].get();
+
+                VkFormat unormFormat = convertToUNORM(pLogicalSwapchain->format);
+                VkFormat srgbFormat  = convertToSRGB(pLogicalSwapchain->format);
+
+                pLogicalSwapchain->effects.clear();
+                pLogicalSwapchain->commandBuffersEffect = pLogicalSwapchain->commandBuffersNoEffect;
+
+                for (uint32_t i = 0; i < effectStrings.size(); i++)
+                {
+                    Logger::debug("current effectString " + effectStrings[i]);
+                    std::vector<VkImage> firstImages(pLogicalSwapchain->fakeImages.begin() + pLogicalSwapchain->imageCount * i,
+                                                     pLogicalSwapchain->fakeImages.begin() + pLogicalSwapchain->imageCount * (i + 1));
+                    Logger::debug(std::to_string(firstImages.size()) + " images in firstImages");
+                    std::vector<VkImage> secondImages;
+                    if (i == effectStrings.size() - 1)
+                    {
+                        secondImages = pLogicalDevice->supportsMutableFormat
+                                           ? pLogicalSwapchain->images
+                                           : std::vector<VkImage>(pLogicalSwapchain->fakeImages.end() - pLogicalSwapchain->imageCount,
+                                                                  pLogicalSwapchain->fakeImages.end());
+                        Logger::debug("using swapchain images as second images");
+                    }
+                    else
+                    {
+                        secondImages = std::vector<VkImage>(pLogicalSwapchain->fakeImages.begin() + pLogicalSwapchain->imageCount * (i + 1),
+                                                            pLogicalSwapchain->fakeImages.begin() + pLogicalSwapchain->imageCount * (i + 2));
+                        Logger::debug("not using swapchain images as second images");
+                    }
+                    Logger::debug(std::to_string(secondImages.size()) + " images in secondImages");
+                    if (effectStrings[i] == std::string("fxaa"))
+                    {
+                        pLogicalSwapchain->effects.push_back(std::shared_ptr<Effect>(
+                            new FxaaEffect(pLogicalDevice, srgbFormat, pLogicalSwapchain->imageExtent, firstImages, secondImages, pConfig.get())));
+                        Logger::debug("created FxaaEffect");
+                    }
+                    else if (effectStrings[i] == std::string("cas"))
+                    {
+                        pLogicalSwapchain->effects.push_back(std::shared_ptr<Effect>(
+                            new CasEffect(pLogicalDevice, unormFormat, pLogicalSwapchain->imageExtent, firstImages, secondImages, pConfig.get())));
+                        Logger::debug("created CasEffect");
+                    }
+                    else if (effectStrings[i] == std::string("deband"))
+                    {
+                        pLogicalSwapchain->effects.push_back(std::shared_ptr<Effect>(
+                            new DebandEffect(pLogicalDevice, unormFormat, pLogicalSwapchain->imageExtent, firstImages, secondImages, pConfig.get())));
+                        Logger::debug("created DebandEffect");
+                    }
+                    else if (effectStrings[i] == std::string("smaa"))
+                    {
+                        pLogicalSwapchain->effects.push_back(std::shared_ptr<Effect>(
+                            new SmaaEffect(pLogicalDevice, unormFormat, pLogicalSwapchain->imageExtent, firstImages, secondImages, pConfig.get())));
+                        Logger::debug("created SmaaEffect");
+                    }
+                    else if (effectStrings[i] == std::string("lut"))
+                    {
+                        pLogicalSwapchain->effects.push_back(std::shared_ptr<Effect>(
+                            new LutEffect(pLogicalDevice, unormFormat, pLogicalSwapchain->imageExtent, firstImages, secondImages, pConfig.get())));
+                        Logger::debug("created LutEffect");
+                    }
+                    else if (effectStrings[i] == std::string("dls"))
+                    {
+                        pLogicalSwapchain->effects.push_back(std::shared_ptr<Effect>(
+                            new DlsEffect(pLogicalDevice, unormFormat, pLogicalSwapchain->imageExtent, firstImages, secondImages, pConfig.get())));
+                        Logger::debug("created DlsEffect");
+                    }
+                    else
+                    {
+                        pLogicalSwapchain->effects.push_back(std::shared_ptr<Effect>(new ReshadeEffect(pLogicalDevice,
+                                                                                                       pLogicalSwapchain->format,
+                                                                                                       pLogicalSwapchain->imageExtent,
+                                                                                                       firstImages,
+                                                                                                       secondImages,
+                                                                                                       pConfig.get(),
+                                                                                                       effectStrings[i])));
+                        Logger::debug("created ReshadeEffect");
+                    }
+                }
+
+                if (!pLogicalDevice->supportsMutableFormat)
+                {
+                    pLogicalSwapchain->effects.push_back(std::shared_ptr<Effect>(
+                        new TransferEffect(pLogicalDevice,
+                                           pLogicalSwapchain->format,
+                                           pLogicalSwapchain->imageExtent,
+                                           std::vector<VkImage>(pLogicalSwapchain->fakeImages.end() - pLogicalSwapchain->imageCount,
+                                                                pLogicalSwapchain->fakeImages.end()),
+                                           pLogicalSwapchain->images,
+                                           pConfig.get())));
+                }
+                VkImageView depthImageView = pLogicalDevice->depthImageViews.size() ? pLogicalDevice->depthImageViews[0] : VK_NULL_HANDLE;
+                VkImage     depthImage     = pLogicalDevice->depthImageViews.size() ? pLogicalDevice->depthImages[0] : VK_NULL_HANDLE;
+                VkFormat    depthFormat    = pLogicalDevice->depthImageViews.size() ? pLogicalDevice->depthFormats[0] : VK_FORMAT_UNDEFINED;
+
+                Logger::debug("effect string count: " + std::to_string(effectStrings.size()));
+                Logger::debug("effect count: " + std::to_string(pLogicalSwapchain->effects.size()));
+
+                pLogicalSwapchain->commandBuffersEffect = allocateCommandBuffer(pLogicalDevice, pLogicalSwapchain->imageCount);
+                Logger::debug("allocated ComandBuffers " + std::to_string(pLogicalSwapchain->commandBuffersEffect.size()) + " for swapchain "
+                              + convertToString(swapchain));
+
+                writeCommandBuffers(
+                    pLogicalDevice, pLogicalSwapchain->effects, depthImage, depthImageView, depthFormat, pLogicalSwapchain->commandBuffersEffect);
+                Logger::debug("wrote CommandBuffers");
+
+                pLogicalSwapchain->semaphores = createSemaphores(pLogicalDevice, pLogicalSwapchain->imageCount);
+                Logger::debug("created semaphores");
+                for (unsigned int i = 0; i < pLogicalSwapchain->imageCount; i++)
+                {
+                    Logger::debug(std::to_string(i) + " written commandbuffer " + convertToString(pLogicalSwapchain->commandBuffersEffect[i]));
+                }
+                Logger::trace("vkGetSwapchainImagesKHR");
+
+                pLogicalSwapchain->defaultTransfer = std::shared_ptr<Effect>(
+                    new TransferEffect(pLogicalDevice,
+                                       pLogicalSwapchain->format,
+                                       pLogicalSwapchain->imageExtent,
+                                       std::vector<VkImage>(pLogicalSwapchain->fakeImages.begin(),
+                                                            pLogicalSwapchain->fakeImages.begin() + pLogicalSwapchain->imageCount),
+                                       pLogicalSwapchain->images,
+                                       pConfig.get()));
+
+                pLogicalSwapchain->commandBuffersNoEffect = allocateCommandBuffer(pLogicalDevice, pLogicalSwapchain->imageCount);
+
+                writeCommandBuffers(pLogicalDevice,
+                                    {pLogicalSwapchain->defaultTransfer},
+                                    VK_NULL_HANDLE,
+                                    VK_NULL_HANDLE,
+                                    VK_FORMAT_UNDEFINED,
+                                    pLogicalSwapchain->commandBuffersNoEffect);
+
+                for (unsigned int i = 0; i < pLogicalSwapchain->imageCount; i++)
+                {
+                    Logger::debug(std::to_string(i) + " written commandbuffer " + convertToString(pLogicalSwapchain->commandBuffersNoEffect[i]));
+                }
+            }
+        }
 
         std::vector<VkSemaphore> presentSemaphores;
         presentSemaphores.reserve(pPresentInfo->swapchainCount);

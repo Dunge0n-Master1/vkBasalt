@@ -13,4 +13,4 @@ if [ -f ~/.bash_aliases ]; then
     source ~/.bash_aliases
 fi
 
-clang-format -i $DIR/src/*cpp $DIR/src/*hpp
+clang-format --verbose -i $DIR/src/*cpp $DIR/basalt_gui/src/* `find src -maxdepth 1 -iname '*hpp' -not -iname 'json.hpp'`

@@ -51,13 +51,72 @@ namespace vkBasalt
         this->options = other.options;
     }
 
+    std::string Config::getReshadeEffectPath(const std::string& effectName)
+    {
+        if (isJson())
+        {
+            try
+            {
+                return json["reshade_effects"][effectName]["path"].get<std::string>();
+            }
+            catch (...)
+            {
+                return std::string();
+            }
+        }
+        else
+            return getOption<std::string>(effectName);
+    }
+
+    std::map<std::string, std::string> Config::getReshadeEffectDefines(const std::string& effectName)
+    {
+        if (isJson())
+        {
+            try
+            {
+                return json["reshade_effects"][effectName]["defs"];
+            }
+            catch (...)
+            {
+            }
+        }
+        return std::map<std::string, std::string>();
+    }
+
+    bool Config::checkReshadeEffectOption(const std::string& effectName, const std::string& option)
+    {
+        if (isJson())
+        {
+            try
+            {
+                return !json["reshade_effects"][effectName]["options"][option].is_null();
+            }
+            catch (...)
+            {
+                return false;
+            }
+        }
+        else
+            return !getOption<std::string>(option).empty();
+    }
+
     void Config::readConfigFile(std::ifstream& stream)
     {
-        std::string line;
-
-        while (std::getline(stream, line))
+        try
         {
-            readConfigLine(line);
+            json = nlohmann::json::parse(stream);
+            Logger::trace("config: json");
+        }
+        catch (const nlohmann::json::exception& e)
+        {
+            Logger::err(e.what());
+            Logger::trace("config: old format");
+            std::string line;
+
+            while (std::getline(stream, line))
+            {
+                readConfigLine(line);
+            }
         }
     }
 

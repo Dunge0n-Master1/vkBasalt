@@ -52,6 +52,8 @@ namespace reshadefx
 		/// <returns></returns>
 		bool add_macro_definition(const std::string &name, std::string value = "1") { return add_macro_definition(name, macro { std::move(value), {} }); }
 
+		void remove_macro_definition(const std::string& name);
+
 		/// <summary>
 		/// Open the specified file, parse its contents and append them to the output.
 		/// </summary>

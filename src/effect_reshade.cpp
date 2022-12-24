@@ -4,6 +4,7 @@
 #include <climits>
 #include <cstdlib>
 #include <cassert>
+#include <unistd.h>
 
 #include <set>
 #include <variant>
@@ -234,7 +235,21 @@ namespace vkBasalt
                         break;
                 }
 
-                std::string          filePath = pConfig->getOption<std::string>("reshadeTexturePath") + "/" + source->value.string_data;
+                std::string filePath;
+
+                if (pConfig->isJson())
+                {
+                    std::vector<std::string> reshadeTexturePath = pConfig->getOption<std::vector<std::string>>("reshadeTexturePath");
+                    for (const std::string& texturePath : reshadeTexturePath)
+                    {
+                        filePath = texturePath + '/' + source->value.string_data;
+                        if (access(filePath.c_str(), F_OK) != -1)
+                            break;
+                    }
+                }
+                else
+                    filePath = pConfig->getOption<std::string>("reshadeTexturePath") + '/' + source->value.string_data;
+
                 stbi_uc*             pixels;
                 std::vector<stbi_uc> resizedPixels;
                 uint32_t             size;
@@ -563,37 +578,43 @@ namespace vkBasalt
             std::vector<VkSpecializationMapEntry> specMapEntrys;
             std::vector<char>                     specData;
 
-            for (uint32_t specId = 0, offset = 0; auto &opt : module.spec_constants)
+            std::string prevOptName;
+            uint        index = 0;
+
+            for (uint32_t specId = 0, offset = 0; auto& opt : module.spec_constants)
             {
                 if (!opt.name.empty())
                 {
-                    std::string val = pConfig->getOption<std::string>(opt.name);
-                    if (!val.empty())
+                    if (prevOptName == opt.name)
+                        index++;
+                    else
+                        index = 0;
+                    if (pConfig->checkReshadeEffectOption(effectName, opt.name))
                     {
                         std::variant<int32_t, uint32_t, float> convertedValue;
                         offset = static_cast<uint32_t>(specData.size());
                         switch (opt.type.base)
                         {
                             case reshadefx::type::t_bool:
-                                convertedValue = (int32_t) pConfig->getOption<bool>(opt.name);
+                                convertedValue = (int32_t) pConfig->getReshadeEffectOption<bool>(effectName, opt.name, index);
                                 specData.resize(offset + sizeof(VkBool32));
                                 std::memcpy(specData.data() + offset, &convertedValue, sizeof(VkBool32));
                                 specMapEntrys.push_back({specId, offset, sizeof(VkBool32)});
                                 break;
                             case reshadefx::type::t_int:
-                                convertedValue = pConfig->getOption<int32_t>(opt.name);
+                                convertedValue = pConfig->getReshadeEffectOption<int32_t>(effectName, opt.name, index);
                                 specData.resize(offset + sizeof(int32_t));
                                 std::memcpy(specData.data() + offset, &convertedValue, sizeof(int32_t));
                                 specMapEntrys.push_back({specId, offset, sizeof(int32_t)});
                                 break;
                             case reshadefx::type::t_uint:
-                                convertedValue = (uint32_t) pConfig->getOption<int32_t>(opt.name);
+                                convertedValue = (uint32_t) pConfig->getReshadeEffectOption<int32_t>(effectName, opt.name, index);
                                 specData.resize(offset + sizeof(uint32_t));
                                 std::memcpy(specData.data() + offset, &convertedValue, sizeof(uint32_t));
                                 specMapEntrys.push_back({specId, offset, sizeof(uint32_t)});
                                 break;
                             case reshadefx::type::t_float:
-                                convertedValue = pConfig->getOption<float>(opt.name);
+                                convertedValue = pConfig->getReshadeEffectOption<float>(effectName, opt.name, index);
                                 specData.resize(offset + sizeof(float));
                                 std::memcpy(specData.data() + offset, &convertedValue, sizeof(float));
                                 specMapEntrys.push_back({specId, offset, sizeof(float)});
@@ -604,6 +625,7 @@ namespace vkBasalt
                         }
                     }
                 }
+                prevOptName = opt.name;
                 specId++;
             }
 
@@ -1125,6 +1147,22 @@ namespace vkBasalt
         preprocessor.add_macro_definition("__RESHADE__", std::to_string(INT_MAX));
         preprocessor.add_macro_definition("__RESHADE_PERFORMANCE_MODE__", "1");
         preprocessor.add_macro_definition("__RENDERER__", "0x20000");
+
+        char    buff[PATH_MAX];
+        ssize_t len = readlink("/proc/self/exe", buff, sizeof(buff) - 1);
+        if (len != -1)
+        {
+            buff[len] = '\0';
+            preprocessor.add_macro_definition("__APPLICATION__",
+                                              std::to_string( // Truncate hash to 32-bit, since lexer currently only supports 32-bit numbers anyway
+                                                  std::hash<std::u8string>()(std::filesystem::path(buff).stem().u8string()) & 0xFFFFFFFF));
+        }
+
+        VkPhysicalDeviceProperties device_props;
+        pLogicalDevice->vki.GetPhysicalDeviceProperties(pLogicalDevice->physicalDevice, &device_props);
+        preprocessor.add_macro_definition("__VENDOR__", std::to_string(device_props.vendorID));
+        preprocessor.add_macro_definition("__DEVICE__", std::to_string(device_props.deviceID));
+
         // TODO add more macros
 
         preprocessor.add_macro_definition("BUFFER_WIDTH", std::to_string(imageExtent.width));
@@ -1132,10 +1170,28 @@ namespace vkBasalt
         preprocessor.add_macro_definition("BUFFER_RCP_WIDTH", "(1.0 / BUFFER_WIDTH)");
         preprocessor.add_macro_definition("BUFFER_RCP_HEIGHT", "(1.0 / BUFFER_HEIGHT)");
         preprocessor.add_macro_definition("BUFFER_COLOR_DEPTH", (inputOutputFormatUNORM == VK_FORMAT_A2R10G10B10_UNORM_PACK32) ? "10" : "8");
-        preprocessor.add_include_path(pConfig->getOption<std::string>("reshadeIncludePath"));
-        if (!preprocessor.append_file(pConfig->getOption<std::string>(effectName)))
+        if (!pConfig->isJson())
+            preprocessor.add_include_path(pConfig->getOption<std::string>("reshadeIncludePath"));
+        else
         {
-            Logger::err("failed to load shader file: " + pConfig->getOption<std::string>(effectName));
+            std::map<std::string, std::string> defs = pConfig->getReshadeEffectDefines(effectName);
+
+            for (auto const& [key, value] : defs)
+            {
+                if (value == "%{[(!undef!)]}%")
+                    preprocessor.remove_macro_definition(key);
+                else
+                    preprocessor.add_macro_definition(key, value);
+            }
+
+            std::vector<std::string> reshadeIncludePath = pConfig->getOption<std::vector<std::string>>("reshadeIncludePath");
+            for (const std::string& includePath : reshadeIncludePath)
+                preprocessor.add_include_path(includePath);
+        }
+
+        if (!preprocessor.append_file(pConfig->getReshadeEffectPath(effectName)))
+        {
+            Logger::err("failed to load shader file: " + pConfig->getReshadeEffectPath(effectName));
             Logger::err("Does the filepath exist and does it not include spaces?");
         }
 

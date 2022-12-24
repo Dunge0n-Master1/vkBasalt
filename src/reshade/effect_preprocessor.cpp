@@ -120,7 +120,13 @@ void reshadefx::preprocessor::add_include_path(const std::filesystem::path &path
 bool reshadefx::preprocessor::add_macro_definition(const std::string &name, const macro &macro)
 {
 	assert(!name.empty());
-	return _macros.emplace(name, macro).second;
+	return _macros.insert_or_assign(name, macro).second;
+}
+
+void reshadefx::preprocessor::remove_macro_definition(const std::string &name)
+{
+	assert(!name.empty());
+	_macros.erase(name);
 }
 
 bool reshadefx::preprocessor::append_file(const std::filesystem::path &path)

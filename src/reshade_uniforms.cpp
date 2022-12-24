@@ -8,6 +8,7 @@
 #include <algorithm>
 
 #include "logger.hpp"
+#include "keyboard_input.hpp"
 
 namespace vkBasalt
 {
@@ -21,6 +22,43 @@ namespace vkBasalt
             Logger::debug(source);
             Logger::debug("size: " + std::to_string(uniform.size));
             Logger::debug("offset: " + std::to_string(uniform.offset));
+        }
+    }
+
+    void get_annotation(const reshadefx::uniform_info& uniformInfo, const std::string& name, int& value)
+    {
+        if (auto annotation =
+                std::find_if(uniformInfo.annotations.begin(), uniformInfo.annotations.end(), [name](const auto& a) { return a.name == name; });
+            annotation != uniformInfo.annotations.end())
+        {
+            value = annotation->type.is_integral() ? annotation->value.as_int[0] : static_cast<int>(annotation->value.as_float[0]);
+        }
+    }
+    void get_annotation(const reshadefx::uniform_info& uniformInfo, const std::string& name, uint& value)
+    {
+        if (auto annotation =
+                std::find_if(uniformInfo.annotations.begin(), uniformInfo.annotations.end(), [name](const auto& a) { return a.name == name; });
+            annotation != uniformInfo.annotations.end())
+        {
+            value = annotation->type.is_integral() ? annotation->value.as_uint[0] : static_cast<int>(annotation->value.as_float[0]);
+        }
+    }
+    void get_annotation(const reshadefx::uniform_info& uniformInfo, const std::string& name, float& value)
+    {
+        if (auto annotation =
+                std::find_if(uniformInfo.annotations.begin(), uniformInfo.annotations.end(), [name](const auto& a) { return a.name == name; });
+            annotation != uniformInfo.annotations.end())
+        {
+            value = annotation->type.is_floating_point() ? annotation->value.as_float[0] : static_cast<float>(annotation->value.as_int[0]);
+        }
+    }
+    void get_annotation(const reshadefx::uniform_info& uniformInfo, const std::string& name, std::string& value)
+    {
+        if (auto annotation =
+                std::find_if(uniformInfo.annotations.begin(), uniformInfo.annotations.end(), [name](const auto& a) { return a.name == name; });
+            annotation != uniformInfo.annotations.end())
+        {
+            value = annotation->value.string_data;
         }
     }
 
@@ -289,12 +327,39 @@ namespace vkBasalt
         {
             Logger::err("Tried to create a KeyUniform from a non key uniform_info");
         }
+
+        std::string modeStr;
+        int         toggle;
+
+        get_annotation(uniformInfo, "keycode", keySym);
+        get_annotation(uniformInfo, "mode", modeStr);
+        get_annotation(uniformInfo, "toggle", toggle);
+
+        keySym = convertToKeySym(keySym);
+
+        if (modeStr == "toggle" || toggle)
+            mode = TOGGLE;
+        else
+            mode = PRESS;
+
         offset = uniformInfo.offset;
         size   = uniformInfo.size;
     }
     void KeyUniform::update(void* mapedBuffer)
     {
-        VkBool32 keyDown = VK_FALSE; // TODO
+        VkBool32 keyDown = VK_FALSE;
+
+        if (keySym != 0)
+        {
+            if (mode == TOGGLE)
+            {
+                std::memcpy(&(keyDown), (uint8_t*) mapedBuffer + offset, sizeof(VkBool32));
+                keyDown = keyDown != isKeyPressed(keySym);
+            }
+            else
+                keyDown = isKeyPressed(keySym);
+        }
+
         std::memcpy((uint8_t*) mapedBuffer + offset, &(keyDown), sizeof(VkBool32));
     }
     KeyUniform::~KeyUniform()
@@ -309,12 +374,65 @@ namespace vkBasalt
         {
             Logger::err("Tried to create a MouseButtonUniform from a non mousebutton uniform_info");
         }
+
+        std::string modeStr;
+        int         toggle;
+        int         keycode;
+
+        get_annotation(uniformInfo, "keycode", keycode);
+        get_annotation(uniformInfo, "mode", modeStr);
+        get_annotation(uniformInfo, "toggle", toggle);
+
+        switch (keycode)
+        {
+            case 0: button = MB_LEFT; break;
+            case 1: button = MB_RIGHT; break;
+            case 2: button = MB_MIDDLE; break;
+            case 3: button = MB_4; break;
+            case 4: button = MB_5; break;
+            default: button = INVALID; break;
+        }
+
+        if (modeStr == "toggle" || toggle)
+            mode = TOGGLE;
+        else
+            mode = PRESS;
+
         offset = uniformInfo.offset;
         size   = uniformInfo.size;
     }
     void MouseButtonUniform::update(void* mapedBuffer)
     {
-        VkBool32 keyDown = VK_FALSE; // TODO
+        VkBool32 keyDown = VK_FALSE;
+
+        const MouseData md = getMouseData();
+
+        if (mode == TOGGLE)
+        {
+            std::memcpy(&(keyDown), (uint8_t*) mapedBuffer + offset, sizeof(VkBool32));
+            switch (button)
+            {
+                case MB_LEFT: keyDown = keyDown != md.buttonLeftPressed; break;
+                case MB_RIGHT: keyDown = keyDown != md.buttonRightPressed; break;
+                case MB_MIDDLE: keyDown = keyDown != md.buttonMiddlePressed; break;
+                case MB_4: keyDown = keyDown != md.button4Pressed; break;
+                case MB_5: keyDown = keyDown != md.button5Pressed; break;
+                case INVALID: break;
+            }
+        }
+        else
+        {
+            switch (button)
+            {
+                case MB_LEFT: keyDown = md.buttonLeftPressed; break;
+                case MB_RIGHT: keyDown = md.buttonRightPressed; break;
+                case MB_MIDDLE: keyDown = md.buttonMiddlePressed; break;
+                case MB_4: keyDown = md.button4Pressed; break;
+                case MB_5: keyDown = md.button5Pressed; break;
+                case INVALID: break;
+            }
+        }
+
         std::memcpy((uint8_t*) mapedBuffer + offset, &(keyDown), sizeof(VkBool32));
     }
     MouseButtonUniform::~MouseButtonUniform()
@@ -334,8 +452,9 @@ namespace vkBasalt
     }
     void MousePointUniform::update(void* mapedBuffer)
     {
-        float point[2] = {0.0f, 0.0f}; // TODO
-        std::memcpy((uint8_t*) mapedBuffer + offset, point, sizeof(float) * 2);
+        const MouseData md       = getMouseData();
+        const float     point[2] = {static_cast<float>(md.win_x_return), static_cast<float>(md.win_y_return)};
+        std::memcpy((uint8_t*) mapedBuffer + offset, point, sizeof(int32_t) * 2);
     }
     MousePointUniform::~MousePointUniform()
     {

@@ -106,6 +106,14 @@ namespace vkBasalt
         KeyUniform(reshadefx::uniform_info uniformInfo);
         void virtual update(void* mapedBuffer) override;
         virtual ~KeyUniform();
+
+    private:
+        int keySym = 0;
+        enum
+        {
+            TOGGLE,
+            PRESS
+        } mode;
     };
 
     class MouseButtonUniform : public ReshadeUniform
@@ -114,6 +122,22 @@ namespace vkBasalt
         MouseButtonUniform(reshadefx::uniform_info uniformInfo);
         void virtual update(void* mapedBuffer) override;
         virtual ~MouseButtonUniform();
+
+    private:
+        enum
+        {
+            MB_LEFT,
+            MB_RIGHT,
+            MB_MIDDLE,
+            MB_4,
+            MB_5,
+            INVALID
+        } button;
+        enum
+        {
+            TOGGLE,
+            PRESS
+        } mode;
     };
 
     class MousePointUniform : public ReshadeUniform
